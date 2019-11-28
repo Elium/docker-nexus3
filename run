@@ -11,17 +11,17 @@ fi
 openssl pkcs12 -export \
   -inkey ${SSL_WORK}/*.key.pem \
   -in ${SSL_WORK}/*chain.pem \
-  -out ${NEXUS_DATA}etc/ssl/jetty.pkcs12 \
+  -out ${NEXUS_DATA}/etc/ssl/jetty.pkcs12 \
   -passout pass:${SSL_STOREPASS}
 
 #### Generate keystore ####
 keytool -importkeystore -noprompt \
-  -srckeystore ${NEXUS_DATA}etc/ssl/jetty.pkcs12 \
+  -srckeystore ${NEXUS_DATA}/etc/ssl/jetty.pkcs12 \
   -srcstoretype PKCS12 \
   -srcstorepass ${SSL_STOREPASS} \
   -deststorepass ${SSL_STOREPASS} \
   -keypass ${SSL_KEYPASS} \
-  -destkeystore ${NEXUS_DATA}etc/ssl/server-keystore.jks
+  -destkeystore ${NEXUS_DATA}/etc/ssl/server-keystore.jks
 
 #### Run nexus ####
 /bin/sh -c ${SONATYPE_DIR}/start-nexus-repository-manager.sh
