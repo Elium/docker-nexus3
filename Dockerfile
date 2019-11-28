@@ -91,4 +91,4 @@ USER nexus
 
 ENV INSTALL4J_ADD_VM_PARAMS="-Xms1200m -Xmx1200m -XX:MaxDirectMemorySize=2g -Djava.util.prefs.userRoot=${NEXUS_DATA}/javaprefs"
 
-CMD bin/run
+CMD ${SONATYPE_WORK}/bin/run
