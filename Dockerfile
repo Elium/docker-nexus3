@@ -1,100 +1,45 @@
-# Copyright (c) 2016-present Sonatype, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+FROM       sonatype/nexus3
+MAINTAINER Brad Beck <bradley.beck+docker@gmail.com>
 
-FROM registry.access.redhat.com/ubi8/ubi
+ENV NEXUS_SSL=${NEXUS_HOME}/etc/ssl
+ENV PUBLIC_CERT=${NEXUS_SSL}/*.cert.pem \
+    PUBLIC_CERT_SUBJ=/CN=localhost \
+    PRIVATE_KEY=${NEXUS_SSL}/*.key.pem \
+    PRIVATE_KEY_PASSWORD=changeit
 
-LABEL vendor=Sonatype \
-      maintainer="Sonatype <cloud-ops@sonatype.com>" \
-      com.sonatype.license="Apache License, Version 2.0" \
-      com.sonatype.name="Nexus Repository Manager base image"
+ARG GOSU_VERSION=1.11
 
+USER root
 
-#### Some args to build the docker --build-args
-ENV SSL_STOREPASS=changeit
-ENV SSL_KEYPASS=changeit
-ENV SSL_DOMAIN_NAME="elium.io"
+RUN sed -e '/^enabled=1/ s/=1/=0/' -i /etc/yum/pluginconf.d/subscription-manager.conf \
+ && yum -y update && yum install -y openssl libxml2 libxslt && yum clean all
 
-ARG NEXUS_VERSION=3.19.1-01
-ARG NEXUS_DOWNLOAD_URL=https://download.sonatype.com/nexus/3/nexus-${NEXUS_VERSION}-unix.tar.gz
-ARG NEXUS_DOWNLOAD_SHA256_HASH=7a2e62848abeb047c99e114b3613d29b4afbd635b03a19842efdcd6b6cb95f4e
+RUN set -eux;\
+    curl -o /usr/local/bin/gosu -SL "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-amd64"; \
+    curl -o /usr/local/bin/gosu.asc -SL "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-amd64.asc"; \
+    gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
+    gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
+    rm -rf /root/.gnupg/ /usr/local/bin/gosu.asc; \
+    command -v gpgconf && gpgconf --kill all || :; \
+    chmod +x /usr/local/bin/gosu; \
+    gosu --version; \
+    gosu nobody true
 
-# configure nexus runtime
-ENV SONATYPE_DIR=/opt/sonatype
-ENV NEXUS_HOME=${SONATYPE_DIR}/nexus \
-    NEXUS_DATA=/nexus-data \
-    NEXUS_CONTEXT='' \
-    SONATYPE_WORK=${SONATYPE_DIR}/sonatype-work \
-    DOCKER_TYPE='rh-docker'
+RUN sed \
+    -e '/^nexus-args/ s:$:,${jetty.etc}/jetty-https.xml:' \
+    -e '/^application-port/a \
+application-port-ssl=8443\
+' \
+    -i ${NEXUS_HOME}/etc/nexus-default.properties
 
-ENV SSL_WORK /etc/ssl/private
+COPY entrypoint.sh ${NEXUS_HOME}/entrypoint.sh
+RUN chown nexus:nexus ${NEXUS_HOME}/entrypoint.sh && chmod a+x ${NEXUS_HOME}/entrypoint.sh
 
-ARG NEXUS_REPOSITORY_MANAGER_COOKBOOK_VERSION="release-0.5.20190212-155606.d1afdfe"
-ARG NEXUS_REPOSITORY_MANAGER_COOKBOOK_URL="https://github.com/sonatype/chef-nexus-repository-manager/releases/download/${NEXUS_REPOSITORY_MANAGER_COOKBOOK_VERSION}/chef-nexus-repository-manager.tar.gz"
+VOLUME [ "${NEXUS_SSL}" ]
 
-ADD solo.json.erb /var/chef/solo.json.erb
+EXPOSE 8081 8443 5000 5001
+WORKDIR ${NEXUS_HOME}
 
-# Install OpenSSL
-RUN yum install -y --disableplugin=subscription-manager  openssl openssl-devel
+ENTRYPOINT [ "./entrypoint.sh" ]
 
-# Install using chef-solo
-# Chef version locked to avoid needing to accept the EULA on behalf of whomever builds the image
-RUN yum install -y --disableplugin=subscription-manager hostname procps \
-    && curl -L https://www.getchef.com/chef/install.sh | bash -s -- -v 14.12.9 \
-    && /opt/chef/embedded/bin/erb /var/chef/solo.json.erb > /var/chef/solo.json \
-    && chef-solo \
-       --recipe-url ${NEXUS_REPOSITORY_MANAGER_COOKBOOK_URL} \
-       --json-attributes /var/chef/solo.json \
-    && rpm -qa *chef* | xargs rpm -e \
-    && rm -rf /etc/chef \
-    && rm -rf /opt/chefdk \
-    && rm -rf /var/cache/yum \
-    && rm -rf /var/chef \
-    && yum clean all
-
-#CUSTOM
-#https://help.sonatype.com/repomanager3/security/configuring-ssl#ConfiguringSSL-ServingSSLDirectly
-
-#### Add run script ####
-ADD run ${SONATYPE_WORK}/bin/run
-RUN chmod +x ${SONATYPE_WORK}/bin/run
-
-RUN mkdir -p ${SONATYPE_WORK}/etc/ssl
-RUN mkdir -p ${NEXUS_DATA}/etc/ssl
-
-### Edit nexus.properties ###
-RUN echo "application-port-ssl=8443" >> ${NEXUS_DATA}/etc/nexus.properties
-RUN sed -i -e '/nexus-args=/ s/=.*/=${jetty.etc}\/jetty.xml,${jetty.etc}\/jetty-http.xml,${jetty.etc}\/jetty-https.xml,${jetty.etc}\/jetty-requestlog.xml,${jetty.etc}\/jetty-http-redirect-to-https.xml/' ${NEXUS_DATA}/etc/nexus.properties
-RUN echo "ssl.etc=\${karaf.data}/etc/ssl" >> ${NEXUS_DATA}/etc/nexus.properties
-RUN sed -i 's/<Set name="KeyStorePath">.*<\/Set>/<Set name="KeyStorePath">\/opt\/nexus\/etc\/ssl\/keystore.jks<\/Set>/g' /${NEXUS_HOME}/etc/jetty/jetty-https.xml \
-  && sed -i 's/<Set name="KeyStorePassword">.*<\/Set>/<Set name="KeyStorePassword">changeit<\/Set>/g' ${NEXUS_HOME}/etc/jetty/jetty-https.xml \
-  && sed -i 's/<Set name="KeyManagerPassword">.*<\/Set>/<Set name="KeyManagerPassword">changeit<\/Set>/g' ${NEXUS_HOME}/etc/jetty/jetty-https.xml \
-  && sed -i 's/<Set name="TrustStorePath">.*<\/Set>/<Set name="TrustStorePath">\/opt\/nexus\/etc\/ssl\/keystore.jks<\/Set>/g' ${NEXUS_HOME}/etc/jetty/jetty-https.xml \
-  && sed -i 's/<Set name="TrustStorePassword">.*<\/Set>/<Set name="TrustStorePassword">changeit<\/Set>/g' ${NEXUS_HOME}/etc/jetty/jetty-https.xml
-
-VOLUME ${NEXUS_DATA}
-VOLUME ${SSL_WORK}
-
-#### http, https, https for docker group, https for hosted docker hub ####
-EXPOSE 8081 5000 5001
-USER nexus
-
-ENV INSTALL4J_ADD_VM_PARAMS="-Xms1200m -Xmx1200m -XX:MaxDirectMemorySize=2g -Djava.util.prefs.userRoot=${NEXUS_DATA}/javaprefs"
-
-WORKDIR ${SONATYPE_WORK}
-
-ENV JAVA_MAX_MEM 4800m
-ENV JAVA_MIN_MEM 1200m
-ENV EXTRA_JAVA_OPTS ""
-
-CMD bin/run
+CMD [ "bin/nexus", "run"]
